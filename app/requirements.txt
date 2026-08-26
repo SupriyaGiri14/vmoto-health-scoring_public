@@ -1,0 +1,6 @@
+# Minimal dependencies for the deployed dashboard app only.
+# The full research/scoring pipeline (src/) has its own
+# requirements.txt at the repo root.
+streamlit
+pandas
+matplotlib
