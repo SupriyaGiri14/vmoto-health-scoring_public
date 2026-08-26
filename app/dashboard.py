@@ -60,9 +60,17 @@ RECENCY_WEIGHT_GROWTH = 1.15
 
 @st.cache_data
 def load_data():
-    rides = pd.read_csv(DATA_DIR / "rides_summary.csv", parse_dates=["session_start", "session_end"])
-    battery = pd.read_csv(DATA_DIR / "battery_timeseries.csv", parse_dates=["timestamp"])
-    vibration = pd.read_csv(DATA_DIR / "vibration_timeseries.csv")
+    # device_id must be read as a string, not a number -- otherwise
+    # pandas auto-detects it as int64 (since values like "1086344"
+    # look purely numeric), which then breaks anywhere the code joins
+    # device IDs into text (e.g. ', '.join(...) requires strings).
+    id_dtypes = {"device_id": str, "vehicle_id": str}
+
+    rides = pd.read_csv(DATA_DIR / "rides_summary.csv", dtype=id_dtypes,
+                         parse_dates=["session_start", "session_end"])
+    battery = pd.read_csv(DATA_DIR / "battery_timeseries.csv", dtype=id_dtypes,
+                           parse_dates=["timestamp"])
+    vibration = pd.read_csv(DATA_DIR / "vibration_timeseries.csv", dtype=id_dtypes)
     return rides, battery, vibration
 
 
