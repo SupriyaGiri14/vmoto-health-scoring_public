@@ -1,0 +1,14 @@
+device_id,vehicle_id,fleet,company,vehicle_type
+012345,Example_V,Examp,Public/Gu,Example_Ve
+1086240,unknown,unknown,development,vmoto_cpx
+1086256,unknown,unknown,development,vmoto_vs1
+1086344,116IAG,Ring,Flink,vmoto_vs1
+1086352,117IAG,Ring,Flink,vmoto_cpx
+1086564,118IAG,Ring,Flink,vmoto_cpx
+1086572,122IAG,Markst,Flink,vmoto_vs1
+1086692,119IAG,Markst,Flink,vmoto_vs1
+16113764,118IAG,Ring,Flink,vmoto_vs1
+16113772,122IAG,Markst,Flink,vmoto_cpx
+16116688,119IAG,Markst,Flink,vmoto_vs1
+16116752,117IAG,Ring,Flink,vmoto_cpx
+16116760,116IAG,Ring,Flink,vmoto_vs1

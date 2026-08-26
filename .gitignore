@@ -1,0 +1,17 @@
+# Raw sensor log files -- large, private, must never be committed.
+data/raw/
+data/raw/*
+*.txt
+
+# The small exported CSVs used by the app ARE meant to be committed
+# (they contain no raw sensor data, only aggregated scores/summaries)
+# -- this rule explicitly un-ignores them despite the *.txt/data rule
+# above being broad.
+!app/data/*.csv
+!data/device_vehicle_map.csv
+
+__pycache__/
+*.pyc
+.venv/
+charts/
+.streamlit/
