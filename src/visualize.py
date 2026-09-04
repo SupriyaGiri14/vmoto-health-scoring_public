@@ -39,7 +39,12 @@ import matplotlib.dates as mdates
 
 from load_logs import load_vmoto_log, NoVmotoDataError
 from battery_health import _active_soc
-from vehicle_health import compute_vehicle_health_score, _vibration_magnitude, VIBRATION_SPIKE_THRESHOLD
+from vehicle_health import (
+    compute_vehicle_health_score,
+    _vibration_magnitude,
+    _count_grouped_events,
+    VIBRATION_SPIKE_THRESHOLD,
+)
 from overall_vehicle_health import ScoredSession, aggregate_vehicle_health
 from vibration_pattern import VibrationSession, classify_vibration_pattern
 
@@ -142,10 +147,18 @@ def plot_vibration_spike_detection(file_path: str, output_path: str) -> None:
     spike_times = [t for t, m in zip(times, mags) if m >= VIBRATION_SPIKE_THRESHOLD]
     spike_mags = [m for m in mags if m >= VIBRATION_SPIKE_THRESHOLD]
 
+    # The dots below show every raw reading above the threshold -- but
+    # the SCORE is based on grouped events (consecutive above-threshold
+    # readings within 1s count as one event, not one per row). Compute
+    # the grouped count here too, so the legend matches what the score
+    # actually used, rather than showing a different, larger raw count.
+    usable_rows = [r for r in rows if _vibration_magnitude(r) is not None]
+    grouped_event_count = _count_grouped_events(usable_rows)
+
     fig, ax = plt.subplots(figsize=(9, 4.5))
     ax.plot(times_plot, mags_plot, color="#555555", linewidth=0.5, alpha=0.7)
     ax.scatter(spike_times, spike_mags, color="#c0392b", s=25, zorder=5,
-               label=f"Spikes ({len(spike_times)})")
+               label=f"Spike events: {grouped_event_count}")
     ax.axhline(VIBRATION_SPIKE_THRESHOLD, color="#c0392b", linestyle="--", linewidth=1.5,
                label=f"Threshold ({int(VIBRATION_SPIKE_THRESHOLD)})")
     ax.set_ylabel("Vibration magnitude (raw units)")

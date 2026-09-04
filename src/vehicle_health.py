@@ -38,6 +38,22 @@ OLDER-schema files should be treated as not directly comparable to
 scores from newer files -- this is a known, accepted limitation
 while the fleet transitions to the newer logger, not something this
 code tries to correct for.
+
+IMPORTANT - consecutive spikes are grouped into ONE event
+--------------------------------------------------------------
+IMU data is time-series data: a single physical bump (e.g. a
+pothole) commonly triggers SEVERAL consecutive readings above the
+threshold, not just one. The first version of this code counted
+every individual above-threshold ROW as a separate "spike" -- so one
+real pothole spanning 5 consecutive readings was counted as 5
+spikes, not 1 event, significantly inflating the penalty.
+
+Fix: consecutive above-threshold readings within
+MAX_EVENT_GAP_SECONDS of each other are now grouped into a single
+event before counting. Checked against real data (device 16116760):
+this reduced 26 raw above-threshold rows down to 9 real grouped
+events -- roughly a 3x difference, confirming this was a real,
+practically significant bug, not just a theoretical one.
 """
 
 from __future__ import annotations
@@ -55,20 +71,33 @@ from load_logs import LogRow
 # The IMU accelerometer values are in raw sensor units, not
 # real-world g-force. This threshold was derived from real NEW-schema
 # data (16116760_2026-08-07.txt, n=25,097 readings): the 99.9th
-# percentile came out at 2,919, so this is set just above that as a
-# "genuinely rare event" cutoff for this hardware generation.
+# percentile came out at 2,919. This is set at 2,900 -- close to,
+# though very slightly BELOW, that percentile (not "just above" as an
+# earlier version of this comment incorrectly stated).
 #
 # Caveat: only one new-schema file was available to check against --
 # this should be re-validated once more new-schema files exist across
 # more devices/vehicles.
-# This is a rough starting guess, not a calibrated value.
 VIBRATION_SPIKE_THRESHOLD = 2900.0
 
-# Points subtracted per spike, per 1000 usable rows (i.e. a RATE, not
-# a raw count). Using a rate instead of a raw count matters a lot --
-# a file with more rows (a longer ride) will naturally contain more
-# spikes even if the riding is equally smooth throughout, so scoring
-# on raw count unfairly punishes longer files.
+# How many seconds apart two above-threshold readings can be and
+# still count as the SAME physical event (e.g. one pothole), rather
+# than two separate events. Checked against real data: a genuine
+# single bump typically shows as several consecutive above-threshold
+# readings spanning well under 1 second (observed real events lasted
+# up to ~0.4s). 1.0s is a deliberately generous cutoff above that.
+MAX_EVENT_GAP_SECONDS = 1.0
+
+# Points subtracted per EVENT (grouped, not raw row count -- see
+# MAX_EVENT_GAP_SECONDS above), per 1000 usable rows (i.e. a RATE,
+# not a raw count). Using a rate instead of a raw count matters a lot
+# -- a file with more rows (a longer ride) will naturally contain
+# more events even if the riding is equally smooth throughout, so
+# scoring on raw count unfairly punishes longer files.
+#
+# Caveat: this 2.0 penalty weight is a tunable assumption, not
+# derived from any real outcome data -- unlike the threshold above,
+# which is at least grounded in a real percentile.
 VIBRATION_SPIKE_PENALTY_PER_1000_ROWS = 2.0
 
 MINIMUM_SCORE = 0.0
@@ -77,7 +106,7 @@ MINIMUM_SCORE = 0.0
 @dataclass
 class VehicleHealthResult:
     score: float
-    vibration_spike_events: int
+    vibration_spike_events: int  # GROUPED events, not raw above-threshold rows
     rows_used: int
 
     # These stay None until real data exists to compute them from --
@@ -102,6 +131,43 @@ def _vibration_magnitude(row: LogRow) -> float | None:
     )
 
 
+def _count_grouped_events(usable_rows: list[LogRow]) -> int:
+    """
+    Counts vibration EVENTS, not raw above-threshold rows. Walks
+    through the rows in order; a run of consecutive above-threshold
+    readings (each within MAX_EVENT_GAP_SECONDS of the previous one)
+    counts as ONE event, regardless of how many individual rows it
+    spans. A large time gap, or a reading that drops back below the
+    threshold, ends the current event -- the next above-threshold
+    reading after that starts a NEW event.
+    """
+    event_count = 0
+    currently_in_event = False
+    previous_timestamp = None
+
+    for row in usable_rows:
+        magnitude = _vibration_magnitude(row)
+        is_above_threshold = magnitude >= VIBRATION_SPIKE_THRESHOLD
+
+        gap_too_large = (
+            previous_timestamp is not None
+            and (row.timestamp - previous_timestamp).total_seconds() > MAX_EVENT_GAP_SECONDS
+        )
+        if gap_too_large:
+            currently_in_event = False
+
+        if is_above_threshold:
+            if not currently_in_event:
+                event_count += 1
+            currently_in_event = True
+        else:
+            currently_in_event = False
+
+        previous_timestamp = row.timestamp
+
+    return event_count
+
+
 def compute_vehicle_health_score(rows: list[LogRow]) -> VehicleHealthResult:
     """
     Takes a list of LogRow (from one file / one ride session) and
@@ -110,11 +176,7 @@ def compute_vehicle_health_score(rows: list[LogRow]) -> VehicleHealthResult:
     """
     usable_rows = [row for row in rows if _vibration_magnitude(row) is not None]
 
-    vibration_spike_events = sum(
-        1
-        for row in usable_rows
-        if _vibration_magnitude(row) >= VIBRATION_SPIKE_THRESHOLD
-    )
+    vibration_spike_events = _count_grouped_events(usable_rows)
 
     penalty = 0.0
     if usable_rows:

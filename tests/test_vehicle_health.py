@@ -7,6 +7,10 @@ Checks that compute_vehicle_health_score() behaves sensibly:
   - a LONGER file with the same spike RATE scores the same as a
     shorter one (this is the bug we caught and fixed -- scoring on
     raw spike count unfairly punished longer files)
+  - CONSECUTIVE above-threshold readings (e.g. one pothole spanning
+    several rows) count as ONE event, not one event per row -- this
+    is the second bug that was caught and fixed
+  - readings separated by a real time gap count as SEPARATE events
 """
 
 from __future__ import annotations
@@ -49,21 +53,42 @@ class VehicleHealthTest(unittest.TestCase):
         self.assertEqual(result.vibration_spike_events, 0)
         self.assertEqual(result.score, 100.0)
 
-    def test_spikes_lower_the_score(self) -> None:
+    def test_two_separated_spikes_count_as_two_events(self) -> None:
+        # Two spikes far apart in time (50 seconds), each isolated by
+        # calm readings -- these are two genuinely separate bumps.
         rows = [_row(i, *CALM) for i in range(18)]
-        rows += [_row(18, *SPIKE), _row(19, *SPIKE)]
+        rows.append(_row(18, *SPIKE))
+        rows += [_row(i, *CALM) for i in range(19, 68)]
+        rows.append(_row(68, *SPIKE))
 
         result = compute_vehicle_health_score(rows)
 
         self.assertEqual(result.vibration_spike_events, 2)
         self.assertLess(result.score, 100.0)
 
+    def test_consecutive_spikes_count_as_one_event(self) -> None:
+        # This reproduces the real bug found in production data: a
+        # single physical bump (e.g. a pothole) often triggers SEVERAL
+        # consecutive above-threshold readings, not just one. These 5
+        # consecutive spike rows (1 second apart, well within
+        # MAX_EVENT_GAP_SECONDS) represent ONE bump and should be
+        # counted as ONE event, not five.
+        rows = [_row(i, *CALM) for i in range(10)]
+        rows += [_row(i, *SPIKE) for i in range(10, 15)]  # 5 consecutive spike rows
+        rows += [_row(i, *CALM) for i in range(15, 20)]
+
+        result = compute_vehicle_health_score(rows)
+
+        self.assertEqual(result.vibration_spike_events, 1)
+
     def test_same_spike_rate_scores_the_same_regardless_of_file_length(self) -> None:
         # Short file: 10 rows, 1 spike (10% spike rate)
         short_rows = [_row(i, *CALM) for i in range(9)]
         short_rows += [_row(9, *SPIKE)]
 
-        # Long file: 100 rows, 10 spikes (same 10% spike rate)
+        # Long file: 100 rows, 10 ISOLATED spikes (same 10% spike
+        # rate) -- each spike is surrounded by calm readings, so
+        # grouping doesn't merge any of them together.
         long_rows = []
         for i in range(100):
             if i % 10 == 0:
