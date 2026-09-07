@@ -294,10 +294,6 @@ def load_vmoto_log(path: Path | str) -> list[LogRow]:
 # ---------------------------------------------------------------------
 # 7. Quick manual check when running this file directly.
 # ---------------------------------------------------------------------
-#
-# This lets you run:  python3 src/load_logs.py path/to/file.txt
-# and see a small summary printed out, without writing a separate
-# script just to try it.
 
 if __name__ == "__main__":
     import sys

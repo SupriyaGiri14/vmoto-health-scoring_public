@@ -192,6 +192,86 @@ def chart_pattern_classification():
 
 
 # ---------------------------------------------------------------------
+# REAL pattern classification -- same rules as vibration_pattern.py's
+# classify_vibration_pattern(), reimplemented locally (same reasoning
+# as aggregate_overall_score() above: keeps the deployed app's
+# dependency list minimal) but applied to the SELECTED vehicle's
+# actual ride history, not a fixed synthetic example.
+# ---------------------------------------------------------------------
+
+ELEVATION_MULTIPLIER = 1.5
+RECENT_WINDOW_SIZE = 3
+
+
+def classify_real_pattern(rates: list[float]) -> tuple[str, str, float]:
+    """
+    Takes a vehicle's real spike rates, oldest to newest, and returns
+    (classification, explanation, baseline_rate).
+    """
+    if len(rates) < 2:
+        return "normal", "Only one ride available -- not enough history to detect a pattern yet.", (rates[0] if rates else 0.0)
+
+    if len(rates) > RECENT_WINDOW_SIZE:
+        earlier = rates[: len(rates) - RECENT_WINDOW_SIZE]
+        recent = rates[-RECENT_WINDOW_SIZE:]
+    else:
+        earlier = rates[:-1]
+        recent = rates[-1:]
+
+    baseline = sorted(earlier)[len(earlier) // 2]  # median
+    cutoff = baseline * ELEVATION_MULTIPLIER
+    recent_elevated = [r > cutoff for r in recent]
+    earlier_normal = all(r <= cutoff for r in earlier)
+
+    if not recent_elevated[-1]:
+        return "normal", "Most recent ride is within normal range for this vehicle.", baseline
+
+    if all(recent_elevated) and len(recent) >= 2:
+        is_climbing = all(recent[i] < recent[i + 1] for i in range(len(recent) - 1))
+        if is_climbing:
+            return "worsening", f"Vibration has been elevated AND increasing across the last {len(recent)} rides -- looks like a developing issue.", baseline
+        return "persistent_elevated", f"Vibration has been consistently elevated across the last {len(recent)} rides -- worth investigating.", baseline
+
+    if recent_elevated[-1] and earlier_normal:
+        return "isolated_spike", "Only the most recent ride is elevated; earlier rides were normal -- likely a rough road, not a vehicle issue.", baseline
+
+    return "normal", "No clear persistent or worsening pattern detected.", baseline
+
+
+def chart_real_pattern_classification(vehicle_rides: pd.DataFrame):
+    """
+    Same style as the illustrative chart above, but using the
+    SELECTED vehicle's actual ride history -- one real result, not
+    three hypothetical scenarios.
+    """
+    vehicle_rides = vehicle_rides.sort_values("session_start")
+    rates = vehicle_rides["vibration_spike_rate_per_1000_rows"].tolist()
+    labels = vehicle_rides["session_start"].dt.strftime("%b %d").tolist()
+
+    classification, explanation, baseline = classify_real_pattern(rates)
+
+    colors = {
+        "normal": "#95a5a6",
+        "isolated_spike": "#e67e22",
+        "persistent_elevated": "#c0392b",
+        "worsening": "#8e44ad",
+    }
+    bar_color = colors.get(classification, "#95a5a6")
+    cutoff = baseline * ELEVATION_MULTIPLIER
+    bar_colors = [bar_color if r > cutoff else "#95a5a6" for r in rates]
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.bar(labels, rates, color=bar_colors, width=0.6)
+    ax.axhline(baseline, color="#1f4e79", linestyle="--", linewidth=1.3,
+               label=f"Baseline: {baseline:.1f}")
+    ax.set_ylabel("Vibration spike rate\n(per 1,000 rows)")
+    ax.set_title(f"Real classification: {classification}", fontsize=12, fontweight="bold")
+    ax.legend(loc="upper left", fontsize=8)
+    plt.tight_layout()
+    return fig, classification, explanation
+
+
+# ---------------------------------------------------------------------
 # The Streamlit page itself.
 # ---------------------------------------------------------------------
 
@@ -255,6 +335,21 @@ def main():
 
     st.subheader("Distinguishing a Road Bump from a Real Vehicle Problem (illustrative)")
     st.pyplot(chart_pattern_classification())
+
+    st.subheader(f"Real Vibration Pattern \u2014 {vehicle_id}'s Actual Ride History")
+    if len(vehicle_rides) < 2:
+        st.info("Need at least 2 rides for this vehicle to detect a pattern -- only 1 available so far.")
+    else:
+        real_fig, real_classification, real_explanation = chart_real_pattern_classification(vehicle_rides)
+        st.pyplot(real_fig)
+        st.caption(f"**{real_classification}** \u2014 {real_explanation}")
+        if len(vehicle_rides) <= 3:
+            st.caption(
+                "\u26a0\ufe0f Limited history: with only "
+                f"{len(vehicle_rides)} rides, this can only distinguish "
+                "\u2018normal\u2019 from \u2018isolated spike\u2019 -- not enough rides yet to "
+                "detect a persistent or worsening pattern."
+            )
 
 
 if __name__ == "__main__":

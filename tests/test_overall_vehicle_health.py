@@ -44,8 +44,8 @@ class AggregateVehicleHealthTest(unittest.TestCase):
         # This is the direct check for Hanlin's Point 1: a vehicle
         # that consistently scores 90 across 3 sessions should have
         # roughly the same overall score as one that scores 90
-        # across 10 sessions -- more usage at the SAME quality should
-        # not drag the number down.
+        # across 10 sessions -- more usage should not drag the number
+        # down.
         few_sessions = [_session(days_ago=i, score=90.0) for i in range(3)]
         many_sessions = [_session(days_ago=i, score=90.0) for i in range(10)]
 
