@@ -117,7 +117,11 @@ def chart_vehicle_health_trend(vehicle_rides: pd.DataFrame):
 
     overall, trend = aggregate_overall_score(scores)
 
-    fig, ax = plt.subplots(figsize=(8, 4))
+    # Width grows with the number of rides, so labels stay readable
+    # even for a vehicle with a long history (e.g. 22+ rides) instead
+    # of cramming everything into a fixed-width chart.
+    width = max(8, len(labels) * 0.5)
+    fig, ax = plt.subplots(figsize=(width, 4.5))
     ax.plot(labels, scores, marker="o", markersize=8, linewidth=2.2, color="#1f4e79")
     ax.axhline(overall, color="#c0392b", linestyle="--", linewidth=1.6, label=f"Overall: {overall}")
     for x, y in zip(labels, scores):
@@ -127,6 +131,8 @@ def chart_vehicle_health_trend(vehicle_rides: pd.DataFrame):
     ax.set_ylabel("Vehicle Health Score")
     ax.set_title(f"Trend: {trend.upper()}", fontsize=12, fontweight="bold")
     ax.legend(loc="lower right", fontsize=8)
+    # Vertical labels avoid overlapping when there are many dates.
+    plt.setp(ax.get_xticklabels(), rotation=90, ha="center")
     plt.tight_layout()
     return fig
 
@@ -203,10 +209,32 @@ ELEVATION_MULTIPLIER = 1.5
 RECENT_WINDOW_SIZE = 3
 
 
+def _percentile(values: list[float], fraction: float) -> float:
+    values_sorted = sorted(values)
+    n = len(values_sorted)
+    if n == 1:
+        return values_sorted[0]
+    index = int(fraction * (n - 1))
+    return values_sorted[index]
+
+
+BASELINE_PERCENTILE = 0.25
+CHRONIC_ELEVATION_FRACTION = 0.5
+CHRONIC_MIN_SESSIONS = 6
+
+
 def classify_real_pattern(rates: list[float]) -> tuple[str, str, float]:
     """
     Takes a vehicle's real spike rates, oldest to newest, and returns
     (classification, explanation, baseline_rate).
+
+    Fixed after finding a real vehicle (119IAG) that was elevated on
+    17 of 22 recorded rides. The original median-based baseline got
+    contaminated by the many bad rides, understating the real
+    severity. Baseline now uses the 25th percentile of earlier rides
+    (closer to this vehicle's own genuinely good days), and a
+    "chronically_elevated" result is returned first if most of the
+    vehicle's FULL history is elevated, not just the recent window.
     """
     if len(rates) < 2:
         return "normal", "Only one ride available -- not enough history to detect a pattern yet.", (rates[0] if rates else 0.0)
@@ -218,8 +246,21 @@ def classify_real_pattern(rates: list[float]) -> tuple[str, str, float]:
         earlier = rates[:-1]
         recent = rates[-1:]
 
-    baseline = sorted(earlier)[len(earlier) // 2]  # median
+    baseline = _percentile(earlier, BASELINE_PERCENTILE)
     cutoff = baseline * ELEVATION_MULTIPLIER
+
+    if len(rates) >= CHRONIC_MIN_SESSIONS:
+        elevated_count = sum(1 for r in rates if r > cutoff)
+        fraction_elevated = elevated_count / len(rates)
+        if fraction_elevated >= CHRONIC_ELEVATION_FRACTION:
+            return (
+                "chronically_elevated",
+                f"{elevated_count} of {len(rates)} rides ({fraction_elevated:.0%}) are elevated "
+                f"relative to this vehicle's own best/healthy readings -- looks like a "
+                f"long-standing issue, not a recent development.",
+                baseline,
+            )
+
     recent_elevated = [r > cutoff for r in recent]
     earlier_normal = all(r <= cutoff for r in earlier)
 
@@ -255,18 +296,25 @@ def chart_real_pattern_classification(vehicle_rides: pd.DataFrame):
         "isolated_spike": "#e67e22",
         "persistent_elevated": "#c0392b",
         "worsening": "#8e44ad",
+        "chronically_elevated": "#7b241c",
     }
     bar_color = colors.get(classification, "#95a5a6")
     cutoff = baseline * ELEVATION_MULTIPLIER
     bar_colors = [bar_color if r > cutoff else "#95a5a6" for r in rates]
 
-    fig, ax = plt.subplots(figsize=(9, 4))
+    # Width grows with the number of rides, same reasoning as the
+    # trend chart above -- keeps date labels readable for vehicles
+    # with a long ride history.
+    width = max(9, len(labels) * 0.5)
+    fig, ax = plt.subplots(figsize=(width, 4.5))
     ax.bar(labels, rates, color=bar_colors, width=0.6)
     ax.axhline(baseline, color="#1f4e79", linestyle="--", linewidth=1.3,
                label=f"Baseline: {baseline:.1f}")
     ax.set_ylabel("Vibration spike rate\n(per 1,000 rows)")
     ax.set_title(f"Real classification: {classification}", fontsize=12, fontweight="bold")
     ax.legend(loc="upper left", fontsize=8)
+    # Vertical labels avoid overlapping when there are many dates.
+    plt.setp(ax.get_xticklabels(), rotation=90, ha="center")
     plt.tight_layout()
     return fig, classification, explanation
 
@@ -314,7 +362,7 @@ def main():
         )
 
     st.subheader(f"Vehicle Health Trend \u2014 {vehicle_id}")
-    st.pyplot(chart_vehicle_health_trend(vehicle_rides))
+    st.pyplot(chart_vehicle_health_trend(vehicle_rides), use_container_width=False)
 
     battery_ride = battery[(battery["vehicle_id"] == vehicle_id) & (battery["ride_date"] == ride_date)]
     vibration_ride = vibration[(vibration["vehicle_id"] == vehicle_id) & (vibration["ride_date"] == ride_date)]
@@ -341,7 +389,7 @@ def main():
         st.info("Need at least 2 rides for this vehicle to detect a pattern -- only 1 available so far.")
     else:
         real_fig, real_classification, real_explanation = chart_real_pattern_classification(vehicle_rides)
-        st.pyplot(real_fig)
+        st.pyplot(real_fig, use_container_width=False)
         st.caption(f"**{real_classification}** \u2014 {real_explanation}")
         if len(vehicle_rides) <= 3:
             st.caption(
