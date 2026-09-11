@@ -71,7 +71,16 @@ def load_data():
     battery = pd.read_csv(DATA_DIR / "battery_timeseries.csv", dtype=id_dtypes,
                            parse_dates=["timestamp"])
     vibration = pd.read_csv(DATA_DIR / "vibration_timeseries.csv", dtype=id_dtypes)
-    return rides, battery, vibration
+    # New: motor current data (only present for newer-schema devices --
+    # file may be empty/missing entries for older-schema rides, handled
+    # the same way as the other timeseries files).
+    motor_path = DATA_DIR / "motor_timeseries.csv"
+    if motor_path.exists() and motor_path.stat().st_size > 0:
+        motor = pd.read_csv(motor_path, dtype=id_dtypes)
+    else:
+        motor = pd.DataFrame(columns=["vehicle_id", "device_id", "ride_date",
+                                        "minute_offset", "max_current_per_throttle_ratio", "above_threshold"])
+    return rides, battery, vibration, motor
 
 
 def aggregate_overall_score(scores: list[float]) -> tuple[float, str]:
@@ -151,6 +160,49 @@ def chart_battery_swap(battery_ride: pd.DataFrame):
     return fig
 
 
+def chart_battery_multi_day(vehicle_battery: pd.DataFrame, num_days: int):
+    """
+    Shows battery behaviour across ALL of a vehicle's rides in one
+    chart, using real timestamps on the x-axis (so overnight/between-
+    ride gaps show up naturally as gaps in the line, not connected).
+    Complements chart_battery_swap() (single ride) with the full
+    multi-day picture -- useful for spotting whether a pack's
+    behaviour is consistent or changing across many rides.
+    """
+    vehicle_battery = vehicle_battery.sort_values("timestamp")
+
+    # Break the line at large gaps (between separate rides/days) so
+    # matplotlib doesn't draw a misleading straight line connecting
+    # the end of one day to the start of the next.
+    timestamps = vehicle_battery["timestamp"].tolist()
+    bat1 = vehicle_battery["battery_1_soc_pct"].tolist()
+    bat2 = vehicle_battery["battery_2_soc_pct"].tolist()
+
+    GAP_HOURS = 2
+    for i in range(len(timestamps) - 1, 0, -1):
+        gap_hours = (timestamps[i] - timestamps[i - 1]).total_seconds() / 3600
+        if gap_hours > GAP_HOURS:
+            timestamps.insert(i, timestamps[i - 1])
+            bat1.insert(i, float("nan"))
+            bat2.insert(i, float("nan"))
+
+    # Width scales with how many days of history exist, same
+    # reasoning as the trend chart -- but uses a more generous factor
+    # since each day can show a dense zigzag swap pattern, not just
+    # a single point.
+    width = max(10, num_days * 1.0)
+    fig, ax = plt.subplots(figsize=(width, 4.5))
+    ax.plot(timestamps, bat1, color="#1f4e79", linewidth=1.2, label="Battery Pack 1")
+    ax.plot(timestamps, bat2, color="#2e8b57", linewidth=1.2, label="Battery Pack 2")
+    ax.set_ylabel("State of Charge (%)")
+    ax.set_title(f"Battery Behaviour Across All Rides ({num_days} days)", fontsize=12, fontweight="bold")
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+    ax.legend(loc="best", fontsize=8)
+    plt.setp(ax.get_xticklabels(), rotation=90, ha="center")
+    plt.tight_layout()
+    return fig
+
+
 def chart_vibration_spikes(vibration_ride: pd.DataFrame):
     vibration_ride = vibration_ride.sort_values("minute_offset")
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -164,6 +216,69 @@ def chart_vibration_spikes(vibration_ride: pd.DataFrame):
                label=f"Threshold ({int(VIBRATION_SPIKE_THRESHOLD)})")
     ax.set_xlabel("Minutes into ride")
     ax.set_ylabel("Max vibration per minute (raw units)")
+    ax.legend(loc="upper right", fontsize=8)
+    plt.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------
+# NEW: Motor Health charts. Kept completely separate from the
+# vibration-based Vehicle Health charts above -- this uses direct
+# motor current data (only available on newer-schema devices) as a
+# more precise replacement for the original throttle-vs-speed proxy.
+# Nothing above this point was changed to add these.
+# ---------------------------------------------------------------------
+
+MOTOR_CURRENT_RATIO_THRESHOLD = 1.14  # matches motor_health.py's calibrated threshold
+
+
+def chart_motor_health_trend(vehicle_rides: pd.DataFrame):
+    """
+    Motor Health Score per ride, same visual style as the Vehicle
+    Health Trend chart. Rides with no motor current data (older
+    logger schema) are simply skipped -- not plotted as a fake 0 or
+    100, since there's genuinely no signal to show for them.
+    """
+    scored_rides = vehicle_rides.dropna(subset=["motor_health_score"]).sort_values("session_start")
+
+    if scored_rides.empty:
+        return None
+
+    labels = scored_rides["session_start"].dt.strftime("%b %d").tolist()
+    scores = scored_rides["motor_health_score"].tolist()
+
+    width = max(8, len(labels) * 0.5)
+    fig, ax = plt.subplots(figsize=(width, 4))
+    ax.plot(labels, scores, marker="o", markersize=8, linewidth=2.2, color="#8e44ad")
+    for x, y in zip(labels, scores):
+        ax.annotate(f"{y}", (x, y), textcoords="offset points", xytext=(0, 10), ha="center",
+                    fontsize=9, fontweight="bold")
+    ax.set_ylim(0, 105)
+    ax.set_ylabel("Motor Health Score")
+    ax.set_title("Motor Health Trend (direct current data)", fontsize=12, fontweight="bold")
+    plt.setp(ax.get_xticklabels(), rotation=90, ha="center")
+    plt.tight_layout()
+    return fig
+
+
+def chart_motor_current_detail(motor_ride: pd.DataFrame):
+    """
+    Same style as chart_vibration_spikes() -- shows the
+    current-per-throttle ratio across one ride, with the threshold
+    line and flagged high-ratio moments highlighted.
+    """
+    motor_ride = motor_ride.sort_values("minute_offset")
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(motor_ride["minute_offset"], motor_ride["max_current_per_throttle_ratio"],
+            color="#555555", linewidth=1.0, alpha=0.8)
+
+    elevated = motor_ride[motor_ride["above_threshold"]]
+    ax.scatter(elevated["minute_offset"], elevated["max_current_per_throttle_ratio"],
+               color="#8e44ad", s=30, zorder=5, label=f"Elevated moments ({len(elevated)})")
+    ax.axhline(MOTOR_CURRENT_RATIO_THRESHOLD, color="#8e44ad", linestyle="--", linewidth=1.4,
+               label=f"Threshold ({MOTOR_CURRENT_RATIO_THRESHOLD})")
+    ax.set_xlabel("Minutes into ride")
+    ax.set_ylabel("Current \u00f7 throttle ratio")
     ax.legend(loc="upper right", fontsize=8)
     plt.tight_layout()
     return fig
@@ -327,7 +442,7 @@ def main():
     st.set_page_config(page_title="Vehicle Health Dashboard", layout="wide")
     st.title("Vehicle & Battery Health Dashboard")
 
-    rides, battery, vibration = load_data()
+    rides, battery, vibration, motor = load_data()
 
     if rides.empty:
         st.error("No ride data found in app/data/. Run export_dashboard_data.py first.")
@@ -380,6 +495,35 @@ def main():
             st.info("No vibration data for this ride.")
         else:
             st.pyplot(chart_vibration_spikes(vibration_ride))
+
+    st.subheader(f"Battery Behaviour Across All Rides \u2014 {vehicle_id}")
+    vehicle_battery = battery[battery["vehicle_id"] == vehicle_id]
+    if vehicle_battery.empty:
+        st.info("No battery data available for this vehicle across any ride.")
+    else:
+        num_days = vehicle_battery["ride_date"].nunique()
+        st.pyplot(chart_battery_multi_day(vehicle_battery, num_days), use_container_width=False)
+        st.caption(
+            f"Showing {num_days} day(s) of battery data. Gaps in the line represent time "
+            "between separate rides (e.g. overnight), not missing data within a ride."
+        )
+
+    st.subheader(f"Motor Health Trend \u2014 {vehicle_id}")
+    st.caption(
+        "New: uses direct motor current data (replaces the older throttle-vs-speed proxy). "
+        "Only available for rides recorded on the newest logger schema -- rides without "
+        "motor current data are simply not shown here, not faked."
+    )
+    motor_fig = chart_motor_health_trend(vehicle_rides)
+    if motor_fig is None:
+        st.info("No motor current data available for this vehicle yet (needs the newest logger schema).")
+    else:
+        st.pyplot(motor_fig, use_container_width=False)
+
+    motor_ride = motor[(motor["vehicle_id"] == vehicle_id) & (motor["ride_date"] == ride_date)]
+    if not motor_ride.empty:
+        st.subheader("Motor Current Detail (selected ride)")
+        st.pyplot(chart_motor_current_detail(motor_ride))
 
     st.subheader("Distinguishing a Road Bump from a Real Vehicle Problem (illustrative)")
     st.pyplot(chart_pattern_classification())

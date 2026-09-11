@@ -37,6 +37,7 @@ from pathlib import Path
 from load_logs import load_vmoto_log, NoVmotoDataError
 from battery_health import compute_battery_health_score, _active_soc
 from vehicle_health import compute_vehicle_health_score, _vibration_magnitude, VIBRATION_SPIKE_THRESHOLD
+from motor_health import compute_motor_health_score, _current_per_throttle, MOTOR_CURRENT_RATIO_THRESHOLD
 from device_vehicle_map import load_device_vehicle_map, device_to_vehicle_id
 
 
@@ -54,6 +55,7 @@ def export_all(
     summary_rows = []
     battery_rows = []
     vibration_rows = []
+    motor_rows = []
 
     txt_files = sorted(input_path.glob("*.txt"))
     print(f"Found {len(txt_files)} files to process...")
@@ -78,6 +80,7 @@ def export_all(
         # --- Summary row ---
         battery_result = compute_battery_health_score(rows)
         vehicle_result = compute_vehicle_health_score(rows)
+        motor_result = compute_motor_health_score(rows)
         spike_rate = (
             (vehicle_result.vibration_spike_events / vehicle_result.rows_used) * 1000
             if vehicle_result.rows_used else 0
@@ -97,6 +100,12 @@ def export_all(
             "vehicle_health_score": vehicle_result.score,
             "vibration_spike_events": vehicle_result.vibration_spike_events,
             "vibration_spike_rate_per_1000_rows": round(spike_rate, 2),
+            # New: motor health, using direct current data where available.
+            # None (not 0) when the file has no motor current data at all
+            # (older logger schema) -- kept as an explicit gap, not faked.
+            "motor_health_score": motor_result.score,
+            "motor_inefficiency_events": motor_result.inefficiency_events,
+            "motor_current_rows_available": motor_result.rows_with_current_data,
         })
         print(f"  Processed: {file_path.name} (vehicle {vehicle_id}, device {device_id}, {ride_date})")
 
@@ -134,15 +143,41 @@ def export_all(
                 "above_threshold": bucket_max[minute_index] >= VIBRATION_SPIKE_THRESHOLD,
             })
 
+        # --- Motor current time series (1-minute max current-per-throttle
+        # ratio buckets) -- only produced for files that actually have
+        # motor current data (newer logger schema). Mirrors the
+        # vibration time series above, same reasoning: raw per-row data
+        # is too dense, so this aggregates to one point per minute. ---
+        motor_bucket_max: dict[int, float] = {}
+        for r in rows:
+            ratio = _current_per_throttle(r)
+            if ratio is None:
+                continue
+            minute_index = int((r.timestamp - session_start).total_seconds() // 60)
+            if minute_index not in motor_bucket_max or ratio > motor_bucket_max[minute_index]:
+                motor_bucket_max[minute_index] = ratio
+
+        for minute_index in sorted(motor_bucket_max.keys()):
+            motor_rows.append({
+                "vehicle_id": vehicle_id,
+                "device_id": device_id,
+                "ride_date": ride_date,
+                "minute_offset": minute_index,
+                "max_current_per_throttle_ratio": round(motor_bucket_max[minute_index], 3),
+                "above_threshold": motor_bucket_max[minute_index] >= MOTOR_CURRENT_RATIO_THRESHOLD,
+            })
+
     # --- Write CSVs ---
     _write_csv(output_path / "rides_summary.csv", summary_rows)
     _write_csv(output_path / "battery_timeseries.csv", battery_rows)
     _write_csv(output_path / "vibration_timeseries.csv", vibration_rows)
+    _write_csv(output_path / "motor_timeseries.csv", motor_rows)
 
     print()
     print(f"rides_summary.csv:        {len(summary_rows)} rows")
     print(f"battery_timeseries.csv:   {len(battery_rows)} rows")
     print(f"vibration_timeseries.csv: {len(vibration_rows)} rows")
+    print(f"motor_timeseries.csv:     {len(motor_rows)} rows")
     print(f"\nSaved to {output_path}/ -- safe to commit, no raw sensor data included.")
 
 
