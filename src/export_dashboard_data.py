@@ -39,6 +39,7 @@ from battery_health import compute_battery_health_score, _active_soc
 from vehicle_health import compute_vehicle_health_score, _vibration_magnitude, VIBRATION_SPIKE_THRESHOLD
 from motor_health import compute_motor_health_score, _current_per_throttle, MOTOR_CURRENT_RATIO_THRESHOLD
 from device_vehicle_map import load_device_vehicle_map, device_to_vehicle_id
+from ride_features import compute_ride_features
 
 
 def export_all(
@@ -81,6 +82,7 @@ def export_all(
         battery_result = compute_battery_health_score(rows)
         vehicle_result = compute_vehicle_health_score(rows)
         motor_result = compute_motor_health_score(rows)
+        ride_features = compute_ride_features(rows)
         spike_rate = (
             (vehicle_result.vibration_spike_events / vehicle_result.rows_used) * 1000
             if vehicle_result.rows_used else 0
@@ -106,6 +108,17 @@ def export_all(
             "motor_health_score": motor_result.score,
             "motor_inefficiency_events": motor_result.inefficiency_events,
             "motor_current_rows_available": motor_result.rows_with_current_data,
+            # New: additional fields from ride_features.py's combined
+            # feature vector -- distance, per-slot battery drop, and
+            # motor current stats not previously surfaced in this CSV.
+            "distance_km": ride_features.distance_km,
+            "soc_used_pct_total": ride_features.soc_used_pct_total,
+            "bat_1_soc_drop": ride_features.bat_1_soc_drop,
+            "bat_2_soc_drop": ride_features.bat_2_soc_drop,
+            "battery_swap_events": ride_features.battery_swap_events,
+            "efficiency_pct_per_km": ride_features.efficiency_pct_per_km,
+            "mean_motor_current": ride_features.mean_motor_current,
+            "peak_motor_current": ride_features.peak_motor_current,
         })
         print(f"  Processed: {file_path.name} (vehicle {vehicle_id}, device {device_id}, {ride_date})")
 

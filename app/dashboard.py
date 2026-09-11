@@ -463,7 +463,7 @@ def main():
     if len(devices_used) > 1:
         st.caption(
             f"This vehicle's history spans {len(devices_used)} different loggers: "
-            f"{', '.join(sorted(devices_used))}. The trend below combines rides across "
+            f"{', '.join(sorted(devices_used))}. Trends below combine rides across "
             "all of them; scores from different logger generations may not be directly comparable."
         )
 
@@ -476,72 +476,113 @@ def main():
             "Health scores for this ride are not yet directly comparable to newer devices."
         )
 
-    st.subheader(f"Vehicle Health Trend \u2014 {vehicle_id}")
-    st.pyplot(chart_vehicle_health_trend(vehicle_rides), use_container_width=False)
-
     battery_ride = battery[(battery["vehicle_id"] == vehicle_id) & (battery["ride_date"] == ride_date)]
     vibration_ride = vibration[(vibration["vehicle_id"] == vehicle_id) & (vibration["ride_date"] == ride_date)]
+    motor_ride = motor[(motor["vehicle_id"] == vehicle_id) & (motor["ride_date"] == ride_date)]
 
-    left, right = st.columns(2)
-    with left:
-        st.subheader("Battery Behaviour")
-        if battery_ride.empty:
-            st.info("No battery data for this ride.")
-        else:
-            st.pyplot(chart_battery_swap(battery_ride))
-    with right:
-        st.subheader("Vibration Spike Detection")
+    tab_vehicle, tab_battery, tab_motor, tab_features = st.tabs(
+        ["Vehicle Health", "Battery Health", "Motor Health", "Ride Features Table"]
+    )
+
+    # -------------------------------------------------------------
+    # Tab 1: Vehicle Health (vibration-based)
+    # -------------------------------------------------------------
+    with tab_vehicle:
+        st.subheader(f"Vehicle Health Trend \u2014 {vehicle_id}")
+        st.pyplot(chart_vehicle_health_trend(vehicle_rides), use_container_width=False)
+
+        st.subheader("Vibration Spike Detection (selected ride)")
         if vibration_ride.empty:
             st.info("No vibration data for this ride.")
         else:
             st.pyplot(chart_vibration_spikes(vibration_ride))
 
-    st.subheader(f"Battery Behaviour Across All Rides \u2014 {vehicle_id}")
-    vehicle_battery = battery[battery["vehicle_id"] == vehicle_id]
-    if vehicle_battery.empty:
-        st.info("No battery data available for this vehicle across any ride.")
-    else:
-        num_days = vehicle_battery["ride_date"].nunique()
-        st.pyplot(chart_battery_multi_day(vehicle_battery, num_days), use_container_width=False)
+        st.subheader(f"Real Vibration Pattern \u2014 {vehicle_id}'s Actual Ride History")
+        if len(vehicle_rides) < 2:
+            st.info("Need at least 2 rides for this vehicle to detect a pattern -- only 1 available so far.")
+        else:
+            real_fig, real_classification, real_explanation = chart_real_pattern_classification(vehicle_rides)
+            st.pyplot(real_fig, use_container_width=False)
+            st.caption(f"**{real_classification}** \u2014 {real_explanation}")
+            if len(vehicle_rides) <= 3:
+                st.caption(
+                    "\u26a0\ufe0f Limited history: with only "
+                    f"{len(vehicle_rides)} rides, this can only distinguish "
+                    "\u2018normal\u2019 from \u2018isolated spike\u2019 -- not enough rides yet to "
+                    "detect a persistent or worsening pattern."
+                )
+
+    # -------------------------------------------------------------
+    # Tab 2: Battery Health
+    # -------------------------------------------------------------
+    with tab_battery:
+        st.subheader("Battery Behaviour (selected ride)")
+        if battery_ride.empty:
+            st.info("No battery data for this ride.")
+        else:
+            st.pyplot(chart_battery_swap(battery_ride))
+
+        st.subheader(f"Battery Behaviour Across All Rides \u2014 {vehicle_id}")
+        vehicle_battery = battery[battery["vehicle_id"] == vehicle_id]
+        if vehicle_battery.empty:
+            st.info("No battery data available for this vehicle across any ride.")
+        else:
+            num_days = vehicle_battery["ride_date"].nunique()
+            st.pyplot(chart_battery_multi_day(vehicle_battery, num_days), use_container_width=False)
+            st.caption(
+                f"Showing {num_days} day(s) of battery data. Gaps in the line represent time "
+                "between separate rides (e.g. overnight), not missing data within a ride."
+            )
+
+    # -------------------------------------------------------------
+    # Tab 3: Motor Health
+    # -------------------------------------------------------------
+    with tab_motor:
+        st.subheader(f"Motor Health Trend \u2014 {vehicle_id}")
         st.caption(
-            f"Showing {num_days} day(s) of battery data. Gaps in the line represent time "
-            "between separate rides (e.g. overnight), not missing data within a ride."
+            "Uses direct motor current data (replaces the older throttle-vs-speed proxy). "
+            "Only available for rides recorded on the newest logger schema -- rides without "
+            "motor current data are simply not shown here, not faked."
+        )
+        motor_fig = chart_motor_health_trend(vehicle_rides)
+        if motor_fig is None:
+            st.info("No motor current data available for this vehicle yet (needs the newest logger schema).")
+        else:
+            st.pyplot(motor_fig, use_container_width=False)
+
+        if not motor_ride.empty:
+            st.subheader("Motor Current Detail (selected ride)")
+            st.pyplot(chart_motor_current_detail(motor_ride))
+
+    # -------------------------------------------------------------
+    # Tab 4: Ride Features Table -- every signal, one row per ride
+    # -------------------------------------------------------------
+    with tab_features:
+        st.subheader(f"Full Ride Feature Table \u2014 {vehicle_id}")
+        st.caption(
+            "Every signal combined into one row per ride -- battery, vibration, motor "
+            "current, and per-slot battery consumption. This is the feature table format "
+            "needed for future predictive-maintenance modeling (anomaly detection), not "
+            "just a display -- see the project README for details."
         )
 
-    st.subheader(f"Motor Health Trend \u2014 {vehicle_id}")
-    st.caption(
-        "New: uses direct motor current data (replaces the older throttle-vs-speed proxy). "
-        "Only available for rides recorded on the newest logger schema -- rides without "
-        "motor current data are simply not shown here, not faked."
-    )
-    motor_fig = chart_motor_health_trend(vehicle_rides)
-    if motor_fig is None:
-        st.info("No motor current data available for this vehicle yet (needs the newest logger schema).")
-    else:
-        st.pyplot(motor_fig, use_container_width=False)
+        feature_columns = [
+            "ride_date", "device_id", "schema_tier", "total_rows", "distance_km",
+            "battery_health_score", "voltage_sag_events", "fast_soc_drop_minutes",
+            "soc_used_pct_total", "bat_1_soc_drop", "bat_2_soc_drop", "battery_swap_events",
+            "efficiency_pct_per_km",
+            "vehicle_health_score", "vibration_spike_events", "vibration_spike_rate_per_1000_rows",
+            "motor_health_score", "motor_inefficiency_events", "mean_motor_current", "peak_motor_current",
+        ]
+        display_table = vehicle_rides[feature_columns].sort_values("ride_date", ascending=False)
+        st.dataframe(display_table, use_container_width=True, hide_index=True)
 
-    motor_ride = motor[(motor["vehicle_id"] == vehicle_id) & (motor["ride_date"] == ride_date)]
-    if not motor_ride.empty:
-        st.subheader("Motor Current Detail (selected ride)")
-        st.pyplot(chart_motor_current_detail(motor_ride))
-
-    st.subheader("Distinguishing a Road Bump from a Real Vehicle Problem (illustrative)")
-    st.pyplot(chart_pattern_classification())
-
-    st.subheader(f"Real Vibration Pattern \u2014 {vehicle_id}'s Actual Ride History")
-    if len(vehicle_rides) < 2:
-        st.info("Need at least 2 rides for this vehicle to detect a pattern -- only 1 available so far.")
-    else:
-        real_fig, real_classification, real_explanation = chart_real_pattern_classification(vehicle_rides)
-        st.pyplot(real_fig, use_container_width=False)
-        st.caption(f"**{real_classification}** \u2014 {real_explanation}")
-        if len(vehicle_rides) <= 3:
-            st.caption(
-                "\u26a0\ufe0f Limited history: with only "
-                f"{len(vehicle_rides)} rides, this can only distinguish "
-                "\u2018normal\u2019 from \u2018isolated spike\u2019 -- not enough rides yet to "
-                "detect a persistent or worsening pattern."
-            )
+        st.caption(
+            "Note: bat_1_soc_drop / bat_2_soc_drop are per PHYSICAL SLOT, not per physical "
+            "battery -- since batteries get hot-swapped mid-ride, a value over 100% means "
+            "multiple different batteries passed through that slot in one ride, not that a "
+            "single battery went below empty."
+        )
 
 
 if __name__ == "__main__":
